@@ -39,6 +39,8 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
         using gpu_reorder_pd_t::gpu_reorder_pd_t;
 
         DECLARE_COMMON_PD_T("cuda:cublaslt:any", cudnn_reorder_lt_t);
+	pd_t(const pd_t &rhs) = default;
+        ~pd_t() = default;
 
         // Function to verify data and memory format
         bool valid_data_n_mem_format(impl::engine_t *engine) {

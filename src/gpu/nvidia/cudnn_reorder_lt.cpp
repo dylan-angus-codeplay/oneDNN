@@ -28,8 +28,11 @@ namespace gpu {
 namespace nvidia {
 
 status_t cudnn_reorder_lt_t::execute_internal_reorder(const exec_ctx_t &ctx,
-        const memory_arg_t &src, const memory_arg_t &dst,
-        const memory_arg_t *src_scales, const memory_arg_t *dst_scales) const {
+        const memory_arg_t &src,
+	const memory_arg_t &dst,
+        const memory_arg_t *src_scales,
+	const memory_arg_t *dst_scales) const{
+
     exec_args_t r_args;
     r_args[DNNL_ARG_SRC] = src;
     r_args[DNNL_ARG_DST] = dst;
