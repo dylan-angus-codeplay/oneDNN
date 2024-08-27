@@ -75,23 +75,27 @@ public:
         row_ = dims_[1];
         col_ = dims_[0];
         if (!ampere_src_) {
-            if (src_wrap.matches_one_of_tag(format_tag::ab)) {
-                non_ampere_order_ = CUBLASLT_ORDER_COL;
+            if (src_wrap.matches_one_of_tag(format_tag::ab)
+                    != format_tag::undef) {
+                non_ampere_order_ = CUBLASLT_ORDER_ROW;
             } else {
                 trans = true;
-                non_ampere_order_ = CUBLASLT_ORDER_ROW;
+                non_ampere_order_ = CUBLASLT_ORDER_COL;
             }
         } else {
-            if (dst_wrap.matches_one_of_tag(format_tag::ab)) {
-                non_ampere_order_ = CUBLASLT_ORDER_COL;
+            if (dst_wrap.matches_one_of_tag(format_tag::ab)
+                    != format_tag::undef) {
+                non_ampere_order_ = CUBLASLT_ORDER_ROW;
             } else {
                 trans = true;
-                non_ampere_order_ = CUBLASLT_ORDER_ROW;
+                non_ampere_order_ = CUBLASLT_ORDER_COL;
             }
         }
+
         uint64_t blocked_ld
                 = ceildiv(col_, static_cast<uint64_t>(32)) * 32 * 32;
-
+        auto stride_b_blocked_
+                = ceildiv(row_, static_cast<uint64_t>(32)) * blocked_ld;
         if (ampere_src_) {
             create_matrix_layout(src_layout_, ampere_order_, row_, col_,
                     blocked_ld, src_data_type_);
@@ -99,53 +103,57 @@ public:
             create_matrix_layout(dst_layout_, non_ampere_order_, row_, col_,
                     col_, dst_data_type_);
 
+            src_scratch_size_
+                    = stride_b_blocked_ * src_wrap.data_type_size() * 32;
+            dst_scratch_size_ = dst_wrap.nelems() * dst_wrap.data_type_size();
         } else {
             create_matrix_layout(src_layout_, non_ampere_order_, row_, col_,
                     col_, src_data_type_);
             //if (trans) { std::swap(row_, col_); }
-            create_matrix_layout(dst_layout_, ampere_order_, row_,col_,  
+            create_matrix_layout(dst_layout_, ampere_order_, row_, col_,
                     blocked_ld, dst_data_type_);
+
+            dst_scratch_size_
+                    = stride_b_blocked_ * src_wrap.data_type_size() * 32;
+            src_scratch_size_ = src_wrap.nelems() * src_wrap.data_type_size();
         }
-
-        auto stride_b_blocked_
-                = ceildiv(row_, static_cast<uint64_t>(32)) * blocked_ld;
-        src_scratch_size_ = stride_b_blocked_ * src_wrap.data_type_size() * 32;
-
-        dst_scratch_size_ = src_scratch_size_;
 
         return status::success;
     };
 
     void execute(cublasHandle_t cublas_handle, void *src, void *dst,
             void *src_scale, void *dst_scale) {
+        std::cout << "#### Begin reorder execute\n";
+
         cudaStream_t streamId;
         auto lt_handle = (cublasLtHandle_t)(cublas_handle);
         CUBLAS_EXECUTE_FUNC(cublasGetStream, cublas_handle, &streamId);
         int alpha = 1;
         if (src_scale) {
             float host_src_scale = 1.0f;
-            CUDA_EXECUTE_FUNC(cuMemcpy, (CUdeviceptr)&host_src_scale,
-                    (CUdeviceptr)src_scale, sizeof(float));
+            CUDA_EXECUTE_FUNC(cuMemcpyAsync, (CUdeviceptr)&host_src_scale,
+                    (CUdeviceptr)src_scale, sizeof(float), streamId);
             alpha *= host_src_scale;
         }
         std::cout << "alpha computed " << alpha << std::endl;
         int beta = beta_;
         if (dst_scale) {
             float host_dst_scale = 1.0f;
-            CUDA_EXECUTE_FUNC(cuMemcpy, (CUdeviceptr)&host_dst_scale,
-                    (CUdeviceptr)dst_scale, sizeof(float));
+            CUDA_EXECUTE_FUNC(cuMemcpyAsync, (CUdeviceptr)&host_dst_scale,
+                    (CUdeviceptr)dst_scale, sizeof(float), streamId);
             alpha /= host_dst_scale;
             beta /= host_dst_scale;
         }
-        std::cout << "trans " << trans << std::endl;
-        cublasOperation_t transform_trans
-                = trans ? CUBLAS_OP_T : CUBLAS_OP_N;
-        CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransformDescSetAttribute,
-                trans_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
-                &transform_trans, sizeof(transform_trans));
+        // std::cout << "trans " << trans << std::endl;
+        // cublasOperation_t transform_trans = trans ? CUBLAS_OP_T : CUBLAS_OP_N;
+        // CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransformDescSetAttribute,
+        //         trans_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
+        //         &transform_trans, sizeof(transform_trans));
         CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransform, lt_handle, trans_desc_,
                 &alpha, src, src_layout_, &beta, dst, dst_layout_, dst,
                 dst_layout_, streamId);
+
+        std::cout << "#### End reorder execute\n";
     }
 
     ~cublaslt_reorder_t() { cleanup(); }
@@ -175,13 +183,23 @@ public:
         if (src_scratch_size_) {
             scratchpad.book(
                     memory_tracking::names::key_reorder_cublaslt_src_float,
-                    src_scratch_size_ * 64, 1, 256);
+                    src_scratch_size_, 1, 256);
         }
         if (dst_scratch_size_) {
             scratchpad.book(
                     memory_tracking::names::key_reorder_cublaslt_dst_float,
-                    dst_scratch_size_ * 64, 1, 256);
+                    dst_scratch_size_, 1, 256);
         }
+    }
+
+    bool is_md_col_major(const memory_desc_wrapper &md) {
+        if (md.is_blocking_desc() || md.is_cublaslt_blocked_desc()) {
+            const auto &md_strides
+                    = &md.blocking_desc().strides[/* isbatched_ */ 0];
+            return (md_strides[1] == 1
+                    && md.dims()[/* isbatched_ + 0 */ 0] > 1);
+        }
+        return false;
     }
 
 protected:

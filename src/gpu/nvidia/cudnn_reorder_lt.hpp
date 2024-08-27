@@ -133,43 +133,7 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
         }
 
         status_t init(impl::engine_t *engine, impl::engine_t *src_engine,
-                impl::engine_t *dst_engine) {
-            const auto attr_skip_mask
-                    = primitive_attr_t::skip_mask_t::scales_runtime
-                    | primitive_attr_t::skip_mask_t::post_ops;
-            bool ok = engine == dst_engine && valid_data_n_mem_format(engine)
-                    && attr()->has_default_values(attr_skip_mask) && scales_ok()
-                    && post_ops_ok();
-            if (!ok) return status::unimplemented;
-
-            primitive_attr_t r_attr;
-            int mask = 0;
-            bool is_set = false;
-            auto src = DNNL_ARG_DST;
-            auto dst = DNNL_ARG_SRC;
-            if (src_float_) {
-                src_scratch_md_ = *src_md();
-                dst_scratch_md_ = create_temp_md(src_scratch_md_);
-                this->src_md_ = dst_scratch_md_;
-            } else if (dst_float_) {
-                src_scratch_md_ = create_temp_md(dst_scratch_md_);
-                dst_scratch_md_ = *dst_md();
-            }
-            attr()->scales_.get(src, &mask, &is_set);
-            if (is_set) { r_attr.scales_.set(src, mask); }
-
-            attr()->scales_.get(dst, &mask, &is_set);
-            if (is_set) { r_attr.scales_.set(dst, mask); }
-            //reorder_primitive_desc_create(generic_reorder_desc_, engine,
-            //        &src_scratch_md_, &dst_scratch_md_, &r_attr);
-            reorder_primitive_desc_create(generic_reorder_desc_, engine,
-                    &src_scratch_md_, src_engine, &dst_scratch_md_, dst_engine,
-                    &r_attr);
-
-            if (!ok) return status::unimplemented;
-
-            return dnnl_success;
-        }
+                impl::engine_t *dst_engine);
 
         // Needed for internal reorder to convert src/dst from f32 to s8
         memory_desc_t create_temp_md(const memory_desc_t &md) {
@@ -198,16 +162,16 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
     };
 
     status_t init(impl::engine_t *engine) override {
-
         cublaslt_reorder_.reset(new cublaslt_reorder_t);
-        status_t status = cublaslt_reorder_->init((reorder_pd_t *)pd());
+        CHECK(cublaslt_reorder_->init((reorder_pd_t *)pd()));
         cublaslt_reorder_->init_scratchpad(
                 (reorder_pd_t *)pd(), pd()->generic_reorder_desc_.get());
-        if ((pd()->src_float_ || pd()->dst_float_) && status == dnnl_success) {
-            status = create_nested_primitive(
-                    generic_reorder_, pd()->generic_reorder_desc_, engine);
+        if ((pd()->src_float_ || pd()->dst_float_)) {
+            CHECK(create_nested_primitive(
+                    generic_reorder_, pd()->generic_reorder_desc_, engine));
         }
-        return status;
+
+        return status::success;
     }
 
     status_t execute(const exec_ctx_t &ctx) const override;

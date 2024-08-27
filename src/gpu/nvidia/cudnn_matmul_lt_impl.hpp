@@ -211,6 +211,10 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
                         &trans_desc_, CUDA_R_32I);
             }
         }
+
+        std::cout << "w_blocked: " << std::boolalpha << w_blocked_ << "\n";
+        std::cout << "src_blocked_: " << std::boolalpha << src_blocked_ << "\n";
+        std::cout << "dst_blocked_: " << std::boolalpha << dst_blocked_ << "\n";
     }
 
     status_t init_parameters(const memory_desc_wrapper src_d,

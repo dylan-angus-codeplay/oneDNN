@@ -27,9 +27,48 @@ namespace impl {
 namespace gpu {
 namespace nvidia {
 
+status_t cudnn_reorder_lt_t::pd_t::init(impl::engine_t *engine,
+        impl::engine_t *src_engine, impl::engine_t *dst_engine) {
+    const auto attr_skip_mask = primitive_attr_t::skip_mask_t::scales_runtime
+            | primitive_attr_t::skip_mask_t::post_ops;
+    bool ok = engine == dst_engine && valid_data_n_mem_format(engine)
+            && attr()->has_default_values(attr_skip_mask) && scales_ok()
+            && post_ops_ok();
+    if (!ok) return status::unimplemented;
+
+    primitive_attr_t r_attr;
+    int mask = 0;
+    bool is_set = false;
+    auto src = DNNL_ARG_DST;
+    auto dst = DNNL_ARG_SRC;
+    if (src_float_) {
+        src_scratch_md_ = *src_md();
+        dst_scratch_md_ = create_temp_md(src_scratch_md_);
+        this->src_md_ = dst_scratch_md_;
+    } else if (dst_float_) {
+        src_scratch_md_ = create_temp_md(dst_scratch_md_);
+        dst_scratch_md_ = *dst_md();
+    }
+    attr()->scales_.get(src, &mask, &is_set);
+    if (is_set) { r_attr.scales_.set(src, mask); }
+
+    attr()->scales_.get(dst, &mask, &is_set);
+    if (is_set) { r_attr.scales_.set(dst, mask); }
+    //reorder_primitive_desc_create(generic_reorder_desc_, engine,
+    //        &src_scratch_md_, &dst_scratch_md_, &r_attr);
+    reorder_primitive_desc_create(generic_reorder_desc_, engine,
+            &src_scratch_md_, src_engine, &dst_scratch_md_, dst_engine,
+            &r_attr);
+
+    if (!ok) return status::unimplemented;
+
+    return dnnl_success;
+}
+
 status_t cudnn_reorder_lt_t::execute_internal_reorder(const exec_ctx_t &ctx,
         const memory_arg_t &src, const memory_arg_t &dst,
         const memory_arg_t *src_scales, const memory_arg_t *dst_scales) const {
+    std::cout << "##### Begin internal reorder\n";
 
     exec_args_t r_args;
     r_args[DNNL_ARG_SRC] = src;
@@ -40,10 +79,12 @@ status_t cudnn_reorder_lt_t::execute_internal_reorder(const exec_ctx_t &ctx,
     exec_ctx_t r_ctx(ctx, std::move(r_args));
     nested_scratchpad_t ns(
             ctx, memory_tracking::names::key_nested, generic_reorder_);
-    
+
     r_ctx.set_scratchpad_grantor(ns.grantor());
 
-    return generic_reorder_->execute(r_ctx);
+    auto status = generic_reorder_->execute(r_ctx);
+    std::cout << "##### End internal reorder\n";
+    return status;
 }
 
 status_t cudnn_reorder_lt_t::execute(const exec_ctx_t &ctx) const {
