@@ -74,42 +74,47 @@ public:
         trans = false;
         row_ = dims_[0];
         col_ = dims_[1];
+        int plain_ld = 0;
         if (!ampere_src_) {
             if (src_wrap.matches_one_of_tag(format_tag::ab)
                     != format_tag::undef) {
-                non_ampere_order_ = CUBLASLT_ORDER_ROW;
-            } else {
-                trans = true;
                 non_ampere_order_ = CUBLASLT_ORDER_COL;
+                plain_ld = row_;
+                trans = true;
+            } else {
+                non_ampere_order_ = CUBLASLT_ORDER_ROW;
+                plain_ld = col_;
             }
         } else {
             if (dst_wrap.matches_one_of_tag(format_tag::ab)
                     != format_tag::undef) {
-                non_ampere_order_ = CUBLASLT_ORDER_ROW;
-            } else {
-                trans = true;
                 non_ampere_order_ = CUBLASLT_ORDER_COL;
+                plain_ld = row_;
+                trans = true;
+            } else {
+                non_ampere_order_ = CUBLASLT_ORDER_ROW;
+                plain_ld = col_;
             }
         }
 
+        // std::cout << "---------------- row: " << row_ << ", col: " << col_
+        //           << "\n";
         uint64_t blocked_ld
-                = ceildiv(col_, static_cast<uint64_t>(32)) * 32 * 32;
+                = ceildiv(row_, static_cast<uint64_t>(32)) * 32 * 32;
         auto stride_b_blocked_
-                = ceildiv(row_, static_cast<uint64_t>(32)) * blocked_ld;
+                = ceildiv(col_, static_cast<uint64_t>(32)) * blocked_ld;
         if (ampere_src_) {
-            create_matrix_layout(src_layout_, ampere_order_, row_, col_,
+            create_matrix_layout(src_layout_, ampere_order_, col_, row_,
                     blocked_ld, src_data_type_);
-            //if (trans) { std::swap(row_, col_); }
             create_matrix_layout(dst_layout_, non_ampere_order_, row_, col_,
-                    col_, dst_data_type_);
+                    plain_ld, dst_data_type_);
 
             src_scratch_size_
                     = stride_b_blocked_ * src_wrap.data_type_size() * 32;
             dst_scratch_size_ = dst_wrap.nelems() * dst_wrap.data_type_size();
         } else {
-            create_matrix_layout(src_layout_, non_ampere_order_, row_, col_,
+            create_matrix_layout(src_layout_, non_ampere_order_, col_, row_,
                     col_, src_data_type_);
-            //if (trans) { std::swap(row_, col_); }
             create_matrix_layout(dst_layout_, ampere_order_, row_, col_,
                     blocked_ld, dst_data_type_);
 
@@ -119,7 +124,7 @@ public:
         }
 
         return status::success;
-    };
+    }
 
     void execute(cublasHandle_t cublas_handle, void *src, void *dst,
             void *src_scale, void *dst_scale) {
@@ -142,10 +147,10 @@ public:
             beta /= host_dst_scale;
         }
         // std::cout << "trans " << trans << std::endl;
-        // cublasOperation_t transform_trans = trans ? CUBLAS_OP_T : CUBLAS_OP_N;
-        // CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransformDescSetAttribute,
-        //         trans_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
-        //         &transform_trans, sizeof(transform_trans));
+        cublasOperation_t transform_trans = trans ? CUBLAS_OP_T : CUBLAS_OP_N;
+        CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransformDescSetAttribute,
+                trans_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
+                &transform_trans, sizeof(transform_trans));
         CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransform, lt_handle, trans_desc_,
                 &alpha, src, src_layout_, &beta, dst, dst_layout_, dst,
                 dst_layout_, streamId);

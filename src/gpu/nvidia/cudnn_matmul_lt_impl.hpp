@@ -349,6 +349,8 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
     status_t init_imma_ampere_sizes(const memory_desc_wrapper &src_d,
             const memory_desc_wrapper &weights_d,
             const memory_desc_wrapper &dst_d) {
+        // std::cout << "---------------- M: " << M_ << ", N: " << N_
+        //           << ", K: " << K_ << "\n";
         a_blocked_ld_ = c_blocked_ld_ = M_ * 32;
         b_blocked_ld_ = ceildiv(N_, static_cast<uint64_t>(32)) * 32 * 32;
         stride_b_blocked_
