@@ -72,8 +72,8 @@ public:
         ndims_ = pd->dst_md()->ndims > 4 ? pd->dst_md()->ndims : 4;
 
         trans = false;
-        row_ = dims_[1];
-        col_ = dims_[0];
+        row_ = dims_[0];
+        col_ = dims_[1];
         if (!ampere_src_) {
             if (src_wrap.matches_one_of_tag(format_tag::ab)
                     != format_tag::undef) {
@@ -123,8 +123,6 @@ public:
 
     void execute(cublasHandle_t cublas_handle, void *src, void *dst,
             void *src_scale, void *dst_scale) {
-        std::cout << "#### Begin reorder execute\n";
-
         cudaStream_t streamId;
         auto lt_handle = (cublasLtHandle_t)(cublas_handle);
         CUBLAS_EXECUTE_FUNC(cublasGetStream, cublas_handle, &streamId);
@@ -135,7 +133,6 @@ public:
                     (CUdeviceptr)src_scale, sizeof(float), streamId);
             alpha *= host_src_scale;
         }
-        std::cout << "alpha computed " << alpha << std::endl;
         int beta = beta_;
         if (dst_scale) {
             float host_dst_scale = 1.0f;
@@ -152,8 +149,6 @@ public:
         CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransform, lt_handle, trans_desc_,
                 &alpha, src, src_layout_, &beta, dst, dst_layout_, dst,
                 dst_layout_, streamId);
-
-        std::cout << "#### End reorder execute\n";
     }
 
     ~cublaslt_reorder_t() { cleanup(); }

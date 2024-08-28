@@ -68,8 +68,6 @@ status_t cudnn_reorder_lt_t::pd_t::init(impl::engine_t *engine,
 status_t cudnn_reorder_lt_t::execute_internal_reorder(const exec_ctx_t &ctx,
         const memory_arg_t &src, const memory_arg_t &dst,
         const memory_arg_t *src_scales, const memory_arg_t *dst_scales) const {
-    std::cout << "##### Begin internal reorder\n";
-
     exec_args_t r_args;
     r_args[DNNL_ARG_SRC] = src;
     r_args[DNNL_ARG_DST] = dst;
@@ -82,9 +80,7 @@ status_t cudnn_reorder_lt_t::execute_internal_reorder(const exec_ctx_t &ctx,
 
     r_ctx.set_scratchpad_grantor(ns.grantor());
 
-    auto status = generic_reorder_->execute(r_ctx);
-    std::cout << "##### End internal reorder\n";
-    return status;
+    return generic_reorder_->execute(r_ctx);
 }
 
 status_t cudnn_reorder_lt_t::execute(const exec_ctx_t &ctx) const {
