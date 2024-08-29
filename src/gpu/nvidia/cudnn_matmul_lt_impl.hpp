@@ -327,14 +327,19 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
 
         if (batch_count_ != 1) {
             stride_a_ = get_batch_stride(weights_d);
-            stride_b_ = get_batch_stride(src_d);
+            stride_b_ = src_d.is_cublaslt_blocked_desc()
+                    ? (K_ * N_)
+                    : get_batch_stride(src_d);
             stride_c_ = get_batch_stride(dst_d);
 
             // Enable broadcast semantics.
-            if (src_d.dims()[0] > weights_d.dims()[0])
+            if (src_d.dims()[0] > weights_d.dims()[0]) {
                 stride_a_ = 0;
-            else if (src_d.dims()[0] < weights_d.dims()[0])
+                stride_a_blocked_ = 0;
+            } else if (src_d.dims()[0] < weights_d.dims()[0]) {
                 stride_b_ = 0;
+                stride_b_blocked_ = 0;
+            }
         }
 
         if (!imma_ampere_case_) {
@@ -349,8 +354,6 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
     status_t init_imma_ampere_sizes(const memory_desc_wrapper &src_d,
             const memory_desc_wrapper &weights_d,
             const memory_desc_wrapper &dst_d) {
-        // std::cout << "---------------- M: " << M_ << ", N: " << N_
-        //           << ", K: " << K_ << "\n";
         a_blocked_ld_ = c_blocked_ld_ = M_ * 32;
         b_blocked_ld_ = ceildiv(N_, static_cast<uint64_t>(32)) * 32 * 32;
         stride_b_blocked_
@@ -454,6 +457,20 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
         }
     }
 
+    // #define DUMP_CUDA_TENSOR(dev_ptr, size, datatype) \
+//     { \
+//         std::vector<datatype> host_ctr(size); \
+//         cudaMemcpy(host_ctr.data(), dev_ptr, (size) * sizeof(datatype), \
+//                 cudaMemcpyDeviceToHost); \
+//         cudaDeviceSynchronize(); \
+//         std::cout << #dev_ptr << "\n"; \
+//         for (auto i = 0; i < (size); i++) { \
+//             std::cout << static_cast<int>(host_ctr[i]) << ", "; \
+//             if ((i + 1) % 32 == 0) std::cout << std::endl; \
+//         } \
+//         std::cout << "\n\n"; \
+//     }
+
     void execute(cublasHandle_t cublas_handle, cudnnHandle_t cudnn_handle,
             void *a, void *b, void *c, void *bias, void *algo_scratch,
             void *reorder_scratch, void *block_a_scratch, void *block_b_scratch,
@@ -473,6 +490,8 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
                 transform_matrix(lt_handle, b_layout_, b, blocked_b_layout_,
                         block_b_scratch, !trans_b_, streamId);
                 b = block_b_scratch;
+                std::cout << "---- In matmul: \n";
+                // DUMP_CUDA_TENSOR(b, 1024, int8_t);
             }
             if (!w_blocked_) {
                 transform_matrix(lt_handle, a_layout_, a, blocked_a_layout_,
@@ -777,12 +796,14 @@ private:
                     weights_type_, CUBLASLT_MATMUL_DESC_TRANSA, stride_a_);
         }
 
-        row = K_;
-        col = N_;
-        if (trans_b_) { std::swap(row, col); }
-        create_matrix_layout(b_layout_, CUBLASLT_ORDER_COL,
-                cublasOperation_t::CUBLAS_OP_N, row, col, row, src_type_,
-                CUBLASLT_MATMUL_DESC_TRANSB, stride_b_);
+        if (!src_blocked_) {
+            row = K_;
+            col = N_;
+            if (trans_b_) { std::swap(row, col); }
+            create_matrix_layout(b_layout_, CUBLASLT_ORDER_COL,
+                    cublasOperation_t::CUBLAS_OP_N, row, col, row, src_type_,
+                    CUBLASLT_MATMUL_DESC_TRANSB, stride_b_);
+        }
 
         if (!dst_blocked_) {
             row = M_;

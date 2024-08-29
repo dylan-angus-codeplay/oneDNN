@@ -82,7 +82,9 @@ struct cudnn_matmul_lt_t : cudnn_matmul_base_t {
                                             utils::one_of(bia_dt, s8, s32, f32))
                                     && IMPLICATION(s8_case, scales_ok())
                                     && IMPLICATION(!s8_case, bia_dt == dst_dt)))
-                    && IMPLICATION(with_bias(), !has_runtime_dims_or_strides());
+                    && IMPLICATION(with_bias(), !has_runtime_dims_or_strides())
+                    && src_md()->ndims <= 3 && weights_md()->ndims <= 3
+                    && dst_md()->ndims <= 3;
 
             memory_desc_wrapper weight_wrap(weights_md());
             memory_desc_wrapper dst_wrap(dst_md());

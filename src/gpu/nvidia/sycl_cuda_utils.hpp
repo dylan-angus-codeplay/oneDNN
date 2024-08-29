@@ -214,11 +214,12 @@ static status_t get_cublas_data_type(
 }
 
 inline bool is_md_col32(const memory_desc_wrapper &md) {
+    const bool is_batched = md.ndims() > 2;
     // cublas operates in col-major so this function checks if the rows are blocked in 32.
     if (md.is_blocking_desc()) {
         if (md.blocking_desc().inner_nblks == 1
-                && md.blocking_desc().inner_idxs[md.ndims() - 2] == 0
-                && md.blocking_desc().inner_blks[md.ndims() - 2] == 32) {
+                && md.blocking_desc().inner_idxs[0] == (is_batched ? 1 : 0)
+                && md.blocking_desc().inner_blks[0] == 32) {
             return true;
         }
     }

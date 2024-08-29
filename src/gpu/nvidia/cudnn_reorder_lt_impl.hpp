@@ -44,7 +44,12 @@ public:
 
         if (src_wrap.size() == 0) { return status::success; }
         // Validity checks
-        assert(pd->dst_md()->ndims == pd->src_md()->ndims);
+        if (pd->dst_md()->ndims != pd->src_md()->ndims) {
+            return status::unimplemented;
+        }
+
+        const bool is_batched = src_wrap.ndims() > 2 && dst_wrap.dims()[0];
+        batch_count_ = is_batched ? dst_wrap.dims()[0] : 1;
 
         CUBLAS_EXECUTE_FUNC(
                 cublasLtMatrixTransformDescCreate, &trans_desc_, CUDA_R_32I);
@@ -69,14 +74,12 @@ public:
             convert_dims(pd->src_md()->padded_dims, dims_, pd->src_md()->ndims);
         }
 
-        ndims_ = pd->dst_md()->ndims > 4 ? pd->dst_md()->ndims : 4;
-
         trans = false;
-        row_ = dims_[0];
-        col_ = dims_[1];
+        row_ = dims_[is_batched + 0];
+        col_ = dims_[is_batched + 1];
         int plain_ld = 0;
         if (!ampere_src_) {
-            if (src_wrap.matches_one_of_tag(format_tag::ab)
+            if (src_wrap.matches_one_of_tag(format_tag::ab, format_tag::abc)
                     != format_tag::undef) {
                 non_ampere_order_ = CUBLASLT_ORDER_COL;
                 plain_ld = row_;
@@ -86,7 +89,7 @@ public:
                 plain_ld = col_;
             }
         } else {
-            if (dst_wrap.matches_one_of_tag(format_tag::ab)
+            if (dst_wrap.matches_one_of_tag(format_tag::ab, format_tag::acb)
                     != format_tag::undef) {
                 non_ampere_order_ = CUBLASLT_ORDER_COL;
                 plain_ld = row_;
@@ -97,26 +100,24 @@ public:
             }
         }
 
-        // std::cout << "---------------- row: " << row_ << ", col: " << col_
-        //           << "\n";
         uint64_t blocked_ld
                 = ceildiv(row_, static_cast<uint64_t>(32)) * 32 * 32;
         auto stride_b_blocked_
                 = ceildiv(col_, static_cast<uint64_t>(32)) * blocked_ld;
         if (ampere_src_) {
             create_matrix_layout(src_layout_, ampere_order_, col_, row_,
-                    blocked_ld, src_data_type_);
+                    blocked_ld, src_data_type_, stride_b_blocked_);
             create_matrix_layout(dst_layout_, non_ampere_order_, row_, col_,
-                    plain_ld, dst_data_type_);
+                    plain_ld, dst_data_type_, row_ * col_);
 
             src_scratch_size_
                     = stride_b_blocked_ * src_wrap.data_type_size() * 32;
             dst_scratch_size_ = dst_wrap.nelems() * dst_wrap.data_type_size();
         } else {
             create_matrix_layout(src_layout_, non_ampere_order_, col_, row_,
-                    col_, src_data_type_);
+                    col_, src_data_type_, row_ * col_);
             create_matrix_layout(dst_layout_, ampere_order_, row_, col_,
-                    blocked_ld, dst_data_type_);
+                    blocked_ld, dst_data_type_, stride_b_blocked_);
 
             dst_scratch_size_
                     = stride_b_blocked_ * src_wrap.data_type_size() * 32;
@@ -126,8 +127,25 @@ public:
         return status::success;
     }
 
+    // #define DUMP_CUDA_TENSOR(dev_ptr, size, datatype) \
+//     { \
+//         std::vector<datatype> host_ctr(size); \
+//         cudaMemcpy(host_ctr.data(), dev_ptr, (size) * sizeof(datatype), \
+//                 cudaMemcpyDeviceToHost); \
+//         cudaDeviceSynchronize(); \
+//         std::cout << #dev_ptr << "\n"; \
+//         for (auto i = 0; i < (size); i++) { \
+//             std::cout << static_cast<int>(host_ctr[i]) << ", "; \
+//             if ((i + 1) % 32 == 0) std::cout << std::endl; \
+//         } \
+//         std::cout << "\n\n"; \
+//     }
+
     void execute(cublasHandle_t cublas_handle, void *src, void *dst,
             void *src_scale, void *dst_scale) {
+
+        // DUMP_CUDA_TENSOR(src, src_scratch_size_, int8_t);
+
         cudaStream_t streamId;
         auto lt_handle = (cublasLtHandle_t)(cublas_handle);
         CUBLAS_EXECUTE_FUNC(cublasGetStream, cublas_handle, &streamId);
@@ -146,7 +164,6 @@ public:
             alpha /= host_dst_scale;
             beta /= host_dst_scale;
         }
-        // std::cout << "trans " << trans << std::endl;
         cublasOperation_t transform_trans = trans ? CUBLAS_OP_T : CUBLAS_OP_N;
         CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransformDescSetAttribute,
                 trans_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
@@ -154,6 +171,8 @@ public:
         CUBLAS_EXECUTE_FUNC(cublasLtMatrixTransform, lt_handle, trans_desc_,
                 &alpha, src, src_layout_, &beta, dst, dst_layout_, dst,
                 dst_layout_, streamId);
+
+        // DUMP_CUDA_TENSOR(dst, 1024, int8_t);
     }
 
     ~cublaslt_reorder_t() { cleanup(); }
@@ -192,20 +211,9 @@ public:
         }
     }
 
-    bool is_md_col_major(const memory_desc_wrapper &md) {
-        if (md.is_blocking_desc() || md.is_cublaslt_blocked_desc()) {
-            const auto &md_strides
-                    = &md.blocking_desc().strides[/* isbatched_ */ 0];
-            return (md_strides[1] == 1
-                    && md.dims()[/* isbatched_ + 0 */ 0] > 1);
-        }
-        return false;
-    }
-
 protected:
     cudaDataType_t src_data_type_;
     cudaDataType_t dst_data_type_;
-    int ndims_;
     int dims_[DNNL_MAX_NDIMS];
     float beta_ = 0.0f;
 
@@ -215,6 +223,7 @@ protected:
     uint64_t src_scratch_size_ = 0;
     uint64_t dst_scratch_size_ = 0;
 
+    int batch_count_;
     uint64_t row_, col_;
 
     cublasLtOrder_t ampere_order_ = CUBLASLT_ORDER_COL32_2R_4R4;
@@ -224,13 +233,23 @@ protected:
 
     status_t create_matrix_layout(cublasLtMatrixLayout_t &layout,
             cublasLtOrder_t order, uint64_t row, uint64_t col, uint64_t ld,
-            const cudaDataType_t data_type) {
+            const cudaDataType_t data_type, uint64_t stride) {
 
         CUBLAS_EXECUTE_FUNC(
                 cublasLtMatrixLayoutCreate, &layout, data_type, row, col, ld);
 
         CUBLAS_EXECUTE_FUNC(cublasLtMatrixLayoutSetAttribute, layout,
                 CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order));
+
+        if (batch_count_ != 1) {
+            CUBLAS_EXECUTE_FUNC(cublasLtMatrixLayoutSetAttribute, layout,
+                    CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_count_,
+                    sizeof(batch_count_));
+            CUBLAS_EXECUTE_FUNC(cublasLtMatrixLayoutSetAttribute, layout,
+                    CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &stride,
+                    sizeof(stride));
+        }
+
         return status_t::dnnl_success;
     }
 };

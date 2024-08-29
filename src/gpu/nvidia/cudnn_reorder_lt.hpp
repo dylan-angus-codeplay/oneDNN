@@ -68,6 +68,8 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
             memory_desc_wrapper src_wrap(*src_md());
             memory_desc_wrapper dst_wrap(*dst_md());
 
+            ok = ok && src_wrap.ndims() <= 3 && dst_wrap.ndims() <= 3;
+
             // Only support transforming from plain to blocked format and vice-versa.
             ok = ok && IMPLICATION(src_wrap.is_plain(), !dst_wrap.is_plain());
             ok = ok && IMPLICATION(dst_wrap.is_plain(), !src_wrap.is_plain());
@@ -78,9 +80,6 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
 
             if (!ok) return ok;
 
-            auto ndims = src_wrap.ndims();
-            if (ndims > 2) { return false; }
-
             auto check_tag = [&](const memory_desc_wrapper &wrap,
                                      bool &transpose, format_kind_t &kind) {
                 kind = format_kind_t::dnnl_blocked;
@@ -90,12 +89,14 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
                     return format_tag::undef;
                 }
                 if (wrap.is_plain()) {
-                    auto tag = wrap.matches_one_of_tag(format_tag::ab);
+                    auto tag = wrap.matches_one_of_tag(
+                            format_tag::ab, format_tag::abc);
                     if (tag != format_tag::undef) {
                         transpose = false;
                         return tag;
                     }
-                    tag = wrap.matches_one_of_tag(format_tag::ba);
+                    tag = wrap.matches_one_of_tag(
+                            format_tag::ba, format_tag::acb);
                     if (tag != format_tag::undef) {
                         transpose = true;
                         return tag;
@@ -133,7 +134,43 @@ struct cudnn_reorder_lt_t : public gpu::primitive_t {
         }
 
         status_t init(impl::engine_t *engine, impl::engine_t *src_engine,
-                impl::engine_t *dst_engine);
+                impl::engine_t *dst_engine) {
+            const auto attr_skip_mask
+                    = primitive_attr_t::skip_mask_t::scales_runtime
+                    | primitive_attr_t::skip_mask_t::post_ops;
+            bool ok = engine == dst_engine && valid_data_n_mem_format(engine)
+                    && attr()->has_default_values(attr_skip_mask) && scales_ok()
+                    && post_ops_ok();
+            if (!ok) return status::unimplemented;
+
+            primitive_attr_t r_attr;
+            int mask = 0;
+            bool is_set = false;
+            auto src = DNNL_ARG_DST;
+            auto dst = DNNL_ARG_SRC;
+            if (src_float_) {
+                src_scratch_md_ = *src_md();
+                dst_scratch_md_ = create_temp_md(src_scratch_md_);
+                this->src_md_ = dst_scratch_md_;
+            } else if (dst_float_) {
+                src_scratch_md_ = create_temp_md(dst_scratch_md_);
+                dst_scratch_md_ = *dst_md();
+            }
+            attr()->scales_.get(src, &mask, &is_set);
+            if (is_set) { r_attr.scales_.set(src, mask); }
+
+            attr()->scales_.get(dst, &mask, &is_set);
+            if (is_set) { r_attr.scales_.set(dst, mask); }
+            //reorder_primitive_desc_create(generic_reorder_desc_, engine,
+            //        &src_scratch_md_, &dst_scratch_md_, &r_attr);
+            reorder_primitive_desc_create(generic_reorder_desc_, engine,
+                    &src_scratch_md_, src_engine, &dst_scratch_md_, dst_engine,
+                    &r_attr);
+
+            if (!ok) return status::unimplemented;
+
+            return dnnl_success;
+        }
 
         // Needed for internal reorder to convert src/dst from f32 to s8
         memory_desc_t create_temp_md(const memory_desc_t &md) {
