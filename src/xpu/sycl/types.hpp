@@ -113,6 +113,12 @@ struct md_t {
     md_t(const memory_desc_t *md) {
         memory_desc_wrapper mdw(md);
 
+        // for (int i = 0; i < 6; ++i) {
+        //     dims_[i] = 0;
+        //     padded_dims_[i] = 0;
+        //     strides_[i] = 0;
+        // }
+
         assert(mdw.format_kind() == format_kind::blocked);
         assert(mdw.ndims() <= max_dims);
 

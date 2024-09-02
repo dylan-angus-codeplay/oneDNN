@@ -66,23 +66,33 @@ struct cudnn_matmul_lt_t : cudnn_matmul_base_t {
             bool is_eltwise_ok = eltwise_ok();
 
             bool ok = is_dense_format_kind() && blocking_ok()
-                    && attr()->has_default_values(smask_t::scales_runtime)
-                    && attr_post_ops_ok(attr())
-                    && IMPLICATION(bf16_case,
-                            has_bf16_support(sycl_engine_impl->device()))
-                    && set_default_formats_lt()
-                    && (f32_case || f16_case || bf16_case || s8_case)
-                    && IMPLICATION(with_bias(),
-                            (IMPLICATION(f32_case, utils::one_of(bia_dt, f32))
-                                    && IMPLICATION(f16_case,
-                                            utils::one_of(bia_dt, f16, f32))
-                                    && IMPLICATION(bf16_case,
-                                            utils::one_of(bia_dt, bf16, f32))
-                                    && IMPLICATION(s8_case,
-                                            utils::one_of(bia_dt, s8, s32, f32))
-                                    && IMPLICATION(s8_case, scales_ok())
-                                    && IMPLICATION(!s8_case, bia_dt == dst_dt)))
-                    && IMPLICATION(with_bias(), !has_runtime_dims_or_strides());
+                            && attr()->has_default_values(
+                                    smask_t::scales_runtime)
+                            && attr_post_ops_ok(attr())
+                            && IMPLICATION(bf16_case,
+                                    has_bf16_support(
+                                            sycl_engine_impl->device()))
+                            && s8_case
+                    ? set_default_formats_lt()
+                    : set_default_formats()
+                            && (f32_case || f16_case || bf16_case || s8_case)
+                            && IMPLICATION(with_bias(),
+                                    (IMPLICATION(f32_case,
+                                             utils::one_of(bia_dt, f32))
+                                            && IMPLICATION(f16_case,
+                                                    utils::one_of(
+                                                            bia_dt, f16, f32))
+                                            && IMPLICATION(bf16_case,
+                                                    utils::one_of(
+                                                            bia_dt, bf16, f32))
+                                            && IMPLICATION(s8_case,
+                                                    utils::one_of(bia_dt, s8,
+                                                            s32, f32))
+                                            && IMPLICATION(s8_case, scales_ok())
+                                            && IMPLICATION(!s8_case,
+                                                    bia_dt == dst_dt)))
+                            && IMPLICATION(with_bias(),
+                                    !has_runtime_dims_or_strides());
 
             memory_desc_wrapper src_wrap(src_md(0, true));
             memory_desc_wrapper weight_wrap(weights_md());
@@ -338,7 +348,7 @@ struct cudnn_matmul_lt_t : cudnn_matmul_base_t {
             // src plain format or internal cublaslt format
             bool src_supported = false;
             memory_desc_wrapper src_wrap(src_md());
-            if (src_wrap.is_plain() || src_wrap.is_cublaslt_blocked_desc()) {
+            if (src_wrap.is_cublaslt_blocked_desc() || src_wrap.is_plain()) {
                 src_supported = true;
             }
             // dst blocked in Ab32a, ab or ba
@@ -349,43 +359,60 @@ struct cudnn_matmul_lt_t : cudnn_matmul_base_t {
             }
             return (weights_supported && src_supported && dst_supported);
         }
+
         bool set_default_formats_lt() {
             memory_desc_wrapper w_wrap(this->weights_md_);
             if (w_wrap.format_any()) {
-                auto n_dims = batched() ? 3 : 2;
                 auto tag = batched() ? format_tag::aBc32b : format_tag::Ab32a;
-                memory_desc_init_by_tag(this->weights_md_, n_dims,
-                        w_wrap.dims(), w_wrap.data_type(), tag);
+                CHECK(memory_desc_init_by_tag(this->weights_md_, w_wrap.ndims(),
+                        w_wrap.dims(), w_wrap.data_type(), tag));
             }
 
             memory_desc_wrapper dst_wrap(dst_md());
             if (dst_wrap.format_any()) {
-                auto n_dims = batched() ? 3 : 2;
                 auto tag = batched() ? format_tag::aBc32b : format_tag::Ab32a;
-                memory_desc_init_by_tag(this->dst_md_, n_dims, dst_wrap.dims(),
-                        dst_wrap.data_type(), tag);
+                CHECK(memory_desc_init_by_tag(this->dst_md_, dst_wrap.ndims(),
+                        dst_wrap.dims(), dst_wrap.data_type(), tag));
             }
 
             memory_desc_wrapper src_wrap(this->src_md_);
             if (src_wrap.format_any()) {
-
                 auto ceildiv = [](dim_t n, dim_t d) { return (n + d - 1) / d; };
                 auto n_rows = 32 * ceildiv(src_wrap.dims()[batched()], 32);
                 auto n_cols = 32 * ceildiv(src_wrap.dims()[batched() + 1], 32);
                 auto n_batch = batched() ? src_wrap.dims()[0] : 1;
                 size_t size = n_batch * n_rows * n_cols;
 
-                //this->src_md_.padded_dims[batched()] = n_rows;
-                //this->src_md_.padded_dims[batched() + 1] = n_cols;
-                auto n_dims = batched() ? 3 : 2;
-                auto tag = batched() ? format_tag::abc : format_tag::ab;
-                memory_desc_init_by_tag(this->src_md_, n_dims, src_wrap.dims(),
-                        src_wrap.data_type(), tag);
+                this->src_md_.padded_dims[batched()] = n_rows;
+                this->src_md_.padded_dims[batched() + 1] = n_cols;
+                // auto n_dims = batched() ? 3 : 2;
+                // auto tag = batched() ? format_tag::abc : format_tag::ab;
+                // memory_desc_init_by_tag(this->src_md_, n_dims, src_wrap.dims(),
+                //         src_wrap.data_type(), tag);
                 this->src_md_.format_kind = format_kind::cublaslt_blocked;
                 this->src_md_.format_desc.cublaslt_blocked_desc
                         = cublaslt_blocked_desc_t {
                                 cublaslt_memory_format_t::ampere_blocked, size};
             }
+
+            memory_desc_wrapper b_wrap(this->bias_md_);
+            if (b_wrap.format_any()) {
+                // auto n_dims = b_wrap.ndims();
+                // format_tag_t tag;
+                // switch (n_dims) {
+                //     case 1: tag = format_tag::a; break;
+                //     case 2: tag = format_tag::ab; break;
+                //     case 3: tag = format_tag::abc; break;
+                //     default: tag = format_tag::undef; break;
+                // }
+                // memory_desc_init_by_tag(this->bias_md_, n_dims,
+                //     b_wrap.dims(), b_wrap.data_type(), tag);
+                // CHECK(memory_desc_init_by_strides(this->bias_md_, nullptr));
+                auto tag = batched() ? format_tag::aBc32b : format_tag::Ab32a;
+                CHECK(memory_desc_init_by_tag(this->bias_md_, b_wrap.ndims(),
+                        b_wrap.dims(), b_wrap.data_type(), tag));
+            }
+
             return true;
         }
     };

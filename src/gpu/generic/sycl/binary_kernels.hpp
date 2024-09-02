@@ -121,10 +121,17 @@ struct binary_kernel_vec_t {
             }
         } else {
             for (int i = 0; i < conf_.block_size; i++) {
+                auto block_size = conf_.dst_md.inner_nblks() > 0
+                        ? conf_.dst_md.inner_blks()[0]
+                        : 1;
                 int idx = base_idx + i;
                 if (idx < conf_.wk_size) {
+                    // printf("idx: %d\n", idx);
                     for (int i = 0; i < max_supported_ndims; i++) {
-                        off_dst[i] = idx / strides[i] % dims[i];
+                        off_dst[i] = idx / (strides[i] / block_size) % dims[i];
+                        // ::sycl::ext::oneapi::experimental::printf(
+                        //         "off_dst[%d] = %d / %ld %% %ld = %ld\n", i, idx,
+                        //         strides[i] / block_size, dims[i], off_dst[i]);
                     }
 
                     for (int i = 0; i < max_supported_ndims; i++) {
@@ -134,13 +141,14 @@ struct binary_kernel_vec_t {
 
                     int idx0 = src0_md().off_v(off0);
                     int idx1 = src1_md().off_v(off1);
+                    int dst_idx = dst_md().off_v(off_dst);
 
                     auto src0 = load_float_value(
                             src0_md().data_type(), src0_ptr(), idx0);
                     auto src1 = load_float_value(
                             src1_md().data_type(), src1_ptr(), idx1);
                     auto dst = load_float_value(
-                            dst_md().data_type(), dst_ptr(), idx);
+                            dst_md().data_type(), dst_ptr(), dst_idx);
 
                     if (conf_.do_scale_src0) src0 *= sm_0;
                     if (conf_.do_scale_src1) src1 *= sm_1;
@@ -149,8 +157,12 @@ struct binary_kernel_vec_t {
                     ::sycl::vec<float, 16> post_po_sr
                             = post_op_src_val(off_dst);
                     acc = conf_.post_ops.apply(acc, dst, post_po_sr);
+                    auto out_idx = dst_idx /* idx */ /* * strides[1] */;
+                    // ::sycl::ext::oneapi::experimental::printf(
+                    //         "out_val[%d] = %.2f + %.2f = %.2f\n", out_idx, src0,
+                    //         src1, acc);
                     store_float_value(
-                            dst_md().data_type(), acc, dst_ptr(), idx);
+                            dst_md().data_type(), acc, dst_ptr(), out_idx);
                 }
             }
         }

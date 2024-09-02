@@ -23,6 +23,26 @@ namespace gpu {
 namespace generic {
 namespace sycl {
 
+#define DUMP_MD(MD) \
+    std::cout << #MD << ":\ndims: "; \
+    for (auto e : MD.dims()) \
+        std::cout << e << ", "; \
+    std::cout << "\nstrides: " \
+              << ": "; \
+    for (auto e : MD.strides()) \
+        std::cout << e << ", "; \
+    std::cout << "\ninner_nblks: " << MD.inner_nblks() << ","; \
+    std::cout << "\ninner_blks: "; \
+    for (auto e : MD.inner_blks()) \
+        std::cout << e << ", "; \
+    std::cout << "\ninner_indexes: "; \
+    for (auto e : MD.inner_idxs()) \
+        std::cout << e << ", "; \
+    std::cout << "\npadded_dims: "; \
+    for (auto e : MD.padded_dims()) \
+        std::cout << e << ", "; \
+    std::cout << "\n--------------\n";
+
 status_t ref_binary_t::pd_t::init_conf() {
     conf_ = sycl_binary_conf_t();
 
@@ -30,6 +50,10 @@ status_t ref_binary_t::pd_t::init_conf() {
     conf_.src1_md = xpu::sycl::md_t(src_md(1));
     conf_.dst_md = xpu::sycl::md_t(dst_md());
     conf_.ndims = ndims();
+
+    DUMP_MD(conf_.src0_md)
+    DUMP_MD(conf_.src1_md)
+    DUMP_MD(conf_.dst_md)
 
     // XXX: should probably be tuned.
     conf_.block_size = 16;
@@ -71,6 +95,8 @@ status_t ref_binary_t::init(impl::engine_t *engine) {
 }
 
 status_t ref_binary_t::execute(const exec_ctx_t &ctx) const {
+
+    ctx.zero_pad_output(DNNL_ARG_TO);
 
     parallel_for(ctx, kernel_, [&](::sycl::handler &cgh) {
         auto src0_mem_arg = CTX_IN_SYCL_KERNEL_MEMORY(DNNL_ARG_SRC_0);
