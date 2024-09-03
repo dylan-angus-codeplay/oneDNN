@@ -124,7 +124,13 @@ struct cudnn_matmul_lt_t : cudnn_matmul_base_t {
                 auto binary_desc = binary_desc_t();
                 binary_desc.primitive_kind = primitive_kind::binary;
                 binary_desc.alg_kind = alg_kind::binary_add;
-                binary_desc.src_desc[0] = *dst_md();
+                if (dst_dt == dnnl_s8 && bia_dt != dst_dt) {
+                    binary_desc.src_desc[0] = types::zero_md();
+                    memory_desc_init_by_strides(binary_desc.src_desc[0], dst_md()->ndims,
+                                dst_md()->dims, dnnl_s32, nullptr);
+                } else {
+                    binary_desc.src_desc[0] = *dst_md();
+                }
                 binary_desc.src_desc[1] = *weights_md(1);
                 binary_desc.dst_desc = *dst_md();
 
@@ -457,9 +463,7 @@ struct cudnn_matmul_lt_t : cudnn_matmul_base_t {
     std::shared_ptr<cudnn_matmul_lt_base_exec_t> executor_;
 
 private:
-    const pd_t *pd() const {
-        return (const pd_t *)primitive_t::pd().get();
-    }
+    const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
 };
 
 } // namespace nvidia

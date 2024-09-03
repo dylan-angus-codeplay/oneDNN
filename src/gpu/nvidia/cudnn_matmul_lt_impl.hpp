@@ -98,7 +98,11 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
                         != pd->dst_md()->data_type);
                 if (imma_case_) {
                     with_separate_bias_ = true;
-                    reorder_required_ = false;
+                    if (dst_d.data_type() == dnnl_s8 && bias_dt_mismatch_) {
+                        reorder_required_ = true;
+                    } else {
+                        reorder_required_ = false;
+                    }
                 } else {
 
                     if (bias_dt_mismatch_ || dst_row_major) {
@@ -302,23 +306,24 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
             if (w_blocked_) { trans_a_ = false; }
             if (dst_blocked_) { trans_c_ = false; }
         }
+        auto dst_dt = dst_d.data_type();
+        if (imma_case_ && reorder_required_) { dst_dt = dnnl_s32; }
 
-        if (dst_d.data_type() == dnnl_s8 || dst_d.data_type() == dnnl_bf16) {
+        if (dst_dt == dnnl_s8 || dst_dt == dnnl_bf16) {
             CHECK(get_cublas_data_type(dnnl_f32, acc_type_));
         } else {
-            CHECK(get_cublas_data_type(dst_d.data_type(), acc_type_));
+            CHECK(get_cublas_data_type(dst_dt, acc_type_));
         }
         CHECK(get_cublas_data_type(src_d.data_type(), src_type_));
         CHECK(get_cublas_data_type(weights_d.data_type(), weights_type_));
-        CHECK(get_cublas_data_type(dst_d.data_type(), dst_type_));
+        CHECK(get_cublas_data_type(dst_dt, dst_type_));
 
-        if (dst_d.data_type() == dnnl_f16 && src_d.data_type() == dnnl_f16
+        if (dst_dt == dnnl_f16 && src_d.data_type() == dnnl_f16
                 && weights_d.data_type() == dnnl_f16) {
             compute_type_ = CUBLAS_COMPUTE_16F;
         } else if (src_d.data_type() == dnnl_s8
                 && weights_d.data_type() == dnnl_s8
-                && (dst_d.data_type() == dnnl_s32
-                        || dst_d.data_type() == dnnl_s8)) {
+                && (dst_dt == dnnl_s32 || dst_dt == dnnl_s8)) {
             compute_type_ = CUBLAS_COMPUTE_32I;
         }
 
@@ -555,6 +560,7 @@ struct cudnn_matmul_lt_impl_t : cudnn_matmul_base_impl_t {
             if (!dst_blocked_) {
                 std::memset(beta_, 0, alpha_beta_size_bytes_);
             }
+            c = reorder_required_ ? reorder_scratch : c;
             void *tmp_c = dst_blocked_ ? c : block_c_scratch;
             CUBLAS_EXECUTE_FUNC(cublasLtMatmul, lt_handle, operation_desc_,
                     alpha_, a, blocked_a_layout_, b, blocked_b_layout_, beta_,
